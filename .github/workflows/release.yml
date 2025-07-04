@@ -1,115 +1,67 @@
-name: Android Secure Release 
+name: Android Release Build
  
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version number (e.g. 1.0.0)'
-        required: true
-        type: string 
+        description: '版本号 (例如: 1.0.0)'
+        required: true 
+        type: string
  
 jobs:
   build:
-    runs-on: ubuntu-latest 
-    timeout-minutes: 30 
- 
+    runs-on: ubuntu-latest
     steps:
-      # 第一阶段：基础环境设置 
-      - name: Checkout code 
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4 
  
-      - name: Setup Java 
+      - name: 验证Secrets 
+        run: |
+          [ -n "$KEYSTORE_BASE64" ] || { echo "::error::缺少KEYSTORE_BASE64"; exit 1; }
+          [ -n "$KEYSTORE_PASSWORD" ] || { echo "::error::缺少KEYSTORE_PASSWORD"; exit 1; }
+          [ -n "$KEY_ALIAS" ] || { echo "::error::缺少KEY_ALIAS"; exit 1; }
+          [ -n "$KEY_PASSWORD" ] || { echo "::error::缺少KEY_PASSWORD"; exit 1; }
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+ 
+      - name: 设置JDK 
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
-          cache: 'gradle'
  
-      # 第二阶段：强化版Secrets验证 
-      - name: Validate Secrets (Enhanced)
-        id: validate_secrets 
+      - name: 构建APK 
         run: |
-          echo "=== Secret Validation Start ===" 
-          
-          # 调试输出（不显示真实值）
-          echo "KEYSTORE_BASE64 exists: $([ -n "$KEYSTORE_BASE64" ] && echo 'YES' || echo 'NO')" 
-          echo "KEYSTORE_PASSWORD exists: $([ -n "$KEYSTORE_PASSWORD" ] && echo 'YES' || echo 'NO')"
-          echo "KEY_ALIAS exists: $([ -n "$KEY_ALIAS" ] && echo 'YES' || echo 'NO')"
-          echo "KEY_PASSWORD exists: $([ -n "$KEY_PASSWORD" ] && echo 'YES' || echo 'NO')"
- 
-          # 实际验证 
-          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
-            echo "::error::MISSING_SECRETS::One or more required secrets are empty!"
-            echo "=== Failed Secrets ===" 
-            [ -z "$KEYSTORE_BASE64" ] && echo "❌ KEYSTORE_BASE64"
-            [ -z "$KEYSTORE_PASSWORD" ] && echo "❌ KEYSTORE_PASSWORD"
-            [ -z "$KEY_ALIAS" ] && echo "❌ KEY_ALIAS"
-            [ -z "$KEY_PASSWORD" ] && echo "❌ KEY_PASSWORD"
-            exit 1
-          fi 
- 
-          echo "::notice::All secrets are present and non-empty"
-          echo "=== Secret Validation Passed ===" 
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
- 
-      # 第三阶段：安全构建 
-      - name: Build with Gradle
-        run: |
-          # 生成临时密钥库（验证Secrets有效性）
-          TEMP_KEYSTORE="temp_keystore.jks" 
-          echo "Generating temporary keystore for validation..."
-          keytool -genkeypair \
-            -dname "CN=Temp, OU=Test, O=Temp, C=US" \
-            -alias "$KEY_ALIAS" \
-            -keypass "$KEY_PASSWORD" \
-            -keystore "$TEMP_KEYSTORE" \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 1
- 
-          echo "=== Starting Gradle Build ===" 
-          chmod +x ./gradlew 
+          echo "$KEYSTORE_BASE64" | base64 -di > keystore.jks  
           ./gradlew assembleRelease \
-            -Pandroid.injected.signing.store.file="$TEMP_KEYSTORE"  \
+            -Pandroid.injected.signing.store.file=keystore.jks  \
             -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD"  \
             -Pandroid.injected.signing.key.alias="$KEY_ALIAS"  \
-            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"  \
-            --no-daemon \
-            --stacktrace 
- 
-          rm -f "$TEMP_KEYSTORE"
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
- 
-      # 第四阶段：真实构建（仅在测试通过后执行）
-      - name: Decode Production Keystore
-        if: steps.validate_secrets.outcome  == 'success'
-        run: |
-          echo "$KEYSTORE_BASE64" | base64 -di > app/release.keystore 
-          echo "Keystore decoded successfully (SHA256: $(sha256sum app/release.keystore  | cut -d' ' -f1))"
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD" 
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
- 
-      - name: Final Release Build
-        if: steps.validate_secrets.outcome  == 'success'
-        run: |
-          ./gradlew clean assembleRelease \
-            -Pandroid.injected.signing.store.file="release.keystore"  \
-            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD"  \
-            -Pandroid.injected.signing.key.alias="$KEY_ALIAS"  \
-            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"  \
-            --no-daemon \
-            --stacktrace
-        env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+ 
+      - name: 准备发布文件 
+        run: |
+          mkdir -p release_assets
+          cp app/build/outputs/apk/release/*.apk release_assets/
+          cp app/build/outputs/mapping/release/mapping.txt  release_assets/ || true
+ 
+      - name: 创建GitHub Release 
+        uses: softprops/action-gh-release@v1 
+        with:
+          tag_name: v${{ inputs.version  }}
+          name: Release v${{ inputs.version  }}
+          body: "自动构建版本 ${{ inputs.version  }}"
+          files: |
+            release_assets/*.apk
+            release_assets/mapping.txt 
+          draft: false 
+          prerelease: false 
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

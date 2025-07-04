@@ -22,6 +22,15 @@ jobs:
         uses: actions/setup-java@v2
         with:
           java-version: '11'
+          distribution: 'adoptopenjdk'  # 使用 adoptopenjdk 作为 JDK 发行版
+          java-package: jdk
+          architecture: x64
+          check-latest: false
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+          overwrite-settings: true
+          job-status: success
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v2
